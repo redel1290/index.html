@@ -305,6 +305,48 @@
   <button id="settingsBtn">⚙️ Налаштування</button>
   <button id="resetBtn">🗑️ Скинути прогрес</button>
 </div>
+<!-- ONLINE MENU START (ДОДАНО) -->
+<!-- Вставити всередину або поруч з головним меню -->
+<style id="online-menu-styles">
+  /* Мінімальні стилі — можна підправити в основному CSS */
+  #onlineBtn { display: none; cursor: pointer; padding: 8px 12px; border-radius:6px; }
+  #onlineMenu { display: none; position: absolute; left:50%; top:50%; transform:translate(-50%,-50%); background: rgba(0,0,0,0.85); color:#fff; padding:18px; border-radius:10px; z-index:9999; min-width:320px; box-shadow:0 6px 24px rgba(0,0,0,0.6); }
+  #onlineMenu input { width:60%; padding:6px; margin-right:8px; border-radius:6px; border:1px solid #666; }
+  #onlineMenu button { padding:6px 10px; margin:6px 4px; border-radius:6px; cursor:pointer; }
+  #hostWindow { margin-top:10px; padding:8px; background: rgba(255,255,255,0.05); border-radius:6px; display:none; }
+  #onlineMenu .row { display:flex; align-items:center; justify-content:flex-start; margin:6px 0; gap:6px; flex-wrap:wrap; }
+  #onlineMenu p { margin:0; }
+  @media (max-width:800px){ /* ховати на мобільних додатково */ #onlineBtn{display:none!important} }
+</style>
+
+<!-- КНОПКА В ГОЛОВНОМУ МЕНЮ (Показується тільки на ПК) -->
+<button id="onlineBtn" title="Онлайн режим (тільки ПК/ноут)">Онлайн</button>
+
+<!-- ОКНО МЕНЮ ОНЛАЙН -->
+<div id="onlineMenu" role="dialog" aria-modal="true" aria-hidden="true">
+  <div style="display:flex;justify-content:space-between;align-items:center;">
+    <h3 style="margin:0;">Онлайн меню</h3>
+    <button id="backBtn" aria-label="Назад">Назад</button>
+  </div>
+
+  <div class="row">
+    <button id="createHostBtn">Створити хост</button>
+    <button id="randomJoinBtn">Приєднатися до випадкової гри</button>
+  </div>
+
+  <div class="row">
+    <input id="hostCodeInput" type="text" placeholder="Введіть код хоста (наприклад 1234)" />
+    <button id="joinBtn">Підключитися</button>
+  </div>
+
+  <div id="hostWindow"><p id="hostMessage"></p></div>
+
+  <div style="margin-top:10px; font-size:13px; color:#ccc;">
+    <p style="margin:6px 0;">Примітка: онлайн-режим працює тільки на ПК/ноуті. Максимум 5 гравців у кімнаті.</p>
+  </div>
+</div>
+<!-- ONLINE MENU END -->
+
     <p class="small">Рекорд: <strong id="bestMenu">0</strong> | Очки: <strong id="scoreMenu">0</strong></p>
   </div>
 
@@ -2003,5 +2045,299 @@
   resize();
 })();
   </script>
+<!-- FIREBASE + ONLINE LOGIC START -->
+<!-- SDK (не змінюй порядок) -->
+<script src="https://www.gstatic.com/firebasejs/9.34.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.34.0/firebase-database-compat.js"></script>
+
+<script>
+(function(){
+  // ----- Конфігурація Firebase (твоя) -----
+  const firebaseConfig = {
+    apiKey: "AIzaSyCirCuXUbyS9ero6zlVxkD6y-Tu_ejhx6s",
+    authDomain: "online-block-runner.firebaseapp.com",
+    databaseURL: "https://online-block-runner-default-rtdb.firebaseio.com/",
+    projectId: "online-block-runner",
+    storageBucket: "online-block-runner.firebasestorage.app",
+    messagingSenderId: "251128555496",
+    appId: "1:251128555496:web:f9d5e645582173751c665d",
+    measurementId: "G-2PCK9P7JXT"
+  };
+
+  // Ініціалізація Firebase (ізольовано)
+  const app = firebase.initializeApp(firebaseConfig);
+  const db = firebase.database();
+
+  // ---- УНІКАЛЬНІ ІМЕНА / STATE (щоб не конфліктувати) ----
+  const OM = {}; // Online Module namespace
+
+  // Генеруємо короткий локальний ID гравця (лише для локальної ідентифікації)
+  OM.localPlayerId = 'u' + Math.random().toString(36).slice(2,9);
+
+  // DOM references
+  OM.onlineBtn = document.getElementById('onlineBtn');
+  OM.onlineMenu = document.getElementById('onlineMenu');
+  OM.backBtn = document.getElementById('backBtn');
+  OM.createHostBtn = document.getElementById('createHostBtn');
+  OM.randomJoinBtn = document.getElementById('randomJoinBtn');
+  OM.joinBtn = document.getElementById('joinBtn');
+  OM.hostCodeInput = document.getElementById('hostCodeInput');
+  OM.hostWindow = document.getElementById('hostWindow');
+  OM.hostMessage = document.getElementById('hostMessage');
+
+  // Перевірка: чи ми на ПК/ноуті (повертає true тільки для десктопів)
+  function isPC() {
+    // додатково перевіряємо ширину екрана
+    if (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)) return false;
+    if (window.innerWidth && window.innerWidth < 800) return false;
+    return true;
+  }
+
+  // Показати кнопку Онлайн лише на ПК
+  try {
+    if (isPC() && OM.onlineBtn) {
+      OM.onlineBtn.style.display = 'inline-block';
+    }
+  } catch(e){ console.warn('OnlineButton init error', e); }
+
+  // Відкрити/закрити меню
+  function openOnlineMenu(){
+    if(OM.onlineMenu){ OM.onlineMenu.style.display = 'block'; OM.onlineMenu.setAttribute('aria-hidden','false'); }
+    // ховаємо інші меню (якщо у тебе є #mainMenu)
+    const main = document.getElementById('mainMenu');
+    if(main) main.style.display = 'none';
+  }
+  function closeOnlineMenu(){
+    if(OM.onlineMenu){ OM.onlineMenu.style.display = 'none'; OM.onlineMenu.setAttribute('aria-hidden','true'); }
+    const main = document.getElementById('mainMenu');
+    if(main) main.style.display = 'block';
+  }
+
+  // Події кнопок
+  if(OM.onlineBtn) OM.onlineBtn.addEventListener('click', openOnlineMenu);
+  if(OM.backBtn) OM.backBtn.addEventListener('click', closeOnlineMenu);
+
+  // ---- Помічники для роботи з Firebase ----
+
+  // Генерація 4-значного коду (від 1000 до 9999)
+  function genRoomCode(){
+    return String(Math.floor(1000 + Math.random()*9000));
+  }
+
+  // Повертає snapshot.roomData або null
+  async function getRoomData(code){
+    const snap = await db.ref('rooms/' + code).get();
+    return snap.exists() ? snap.val() : null;
+  }
+
+  // Створити кімнату, якщо код вільний (повертає код або null)
+  async function createRoom() {
+    for (let tries = 0; tries < 6; tries++) {
+      const code = genRoomCode();
+      const ref = db.ref('rooms/' + code);
+      const snap = await ref.get();
+      if (snap.exists()) continue;
+      // створюємо кімнату
+      const now = Date.now();
+      await ref.set({
+        createdAt: now,
+        hostId: OM.localPlayerId,
+        status: "waiting",
+        players: {
+          player1: {
+            id: OM.localPlayerId,
+            joinedAt: now,
+            x: 0, y: 0, alive: true
+          }
+        }
+      });
+      // робимо TTL: якщо хост відключився — можна додати логіку видалення пізніше
+      return code;
+    }
+    return null;
+  }
+
+  // Долучитися до кімнати (повертає playerKey або throws)
+  async function joinRoomByCode(code){
+    const roomRef = db.ref('rooms/' + code);
+    const snap = await roomRef.get();
+    if(!snap.exists()) throw new Error("Кімната не знайдена");
+    const room = snap.val();
+    const players = room.players || {};
+    const count = Object.keys(players).length;
+    if(count >= 5) throw new Error("Кімната повна");
+    // знайдемо вільний слот player1..player5
+    let slot = null;
+    for(let i=1;i<=5;i++){
+      if(!players['player'+i]) { slot = 'player'+i; break; }
+    }
+    if(!slot) throw new Error("Нема вільних слотів");
+
+    const now = Date.now();
+    await roomRef.child('players/' + slot).set({
+      id: OM.localPlayerId,
+      joinedAt: now,
+      x:0, y:0, alive:true
+    });
+
+    // якщо після додавання стало 5 — можна оновити статус
+    const afterSnap = await roomRef.get();
+    const afterPlayers = afterSnap.val().players || {};
+    if(Object.keys(afterPlayers).length >= 5){
+      await roomRef.child('status').set('full');
+    }
+    return slot;
+  }
+
+  // Пошук першої вільної кімнати (status == waiting і <5 гравців)
+  async function findRandomRoom(){
+    const snap = await db.ref('rooms').get();
+    if(!snap.exists()) return null;
+    const rooms = snap.val();
+    for(const code in rooms){
+      const r = rooms[code];
+      const players = r.players || {};
+      const count = Object.keys(players).length;
+      if(r.status === 'waiting' && count < 5) return code;
+    }
+    return null;
+  }
+
+  // Видалити себе з кімнати (при виході)
+  async function leaveRoom(code){
+    if(!code) return;
+    const roomRef = db.ref('rooms/' + code + '/players');
+    const snap = await roomRef.get();
+    if(!snap.exists()) return;
+    const players = snap.val();
+    for(const key in players){
+      if(players[key] && players[key].id === OM.localPlayerId){
+        await roomRef.child(key).remove();
+        break;
+      }
+    }
+    // після видалення — якщо кімната порожня — можна видалити саму кімнату
+    const remaining = await db.ref('rooms/' + code + '/players').get();
+    if(!remaining.exists()) {
+      await db.ref('rooms/' + code).remove().catch(()=>{});
+    } else {
+      // якщо хост вийшов — можна призначити нового хоста (необов'язково)
+      const r = await db.ref('rooms/' + code).get();
+      const rdata = r.val();
+      if(rdata && rdata.hostId){
+        const hostStillThere = Object.values(rdata.players || {}).some(p=>p.id === rdata.hostId);
+        if(!hostStillThere){
+          // призначимо нового хоста (перший)
+          const keys = Object.keys(rdata.players || {});
+          if(keys.length) {
+            const newHostId = rdata.players[keys[0]].id;
+            await db.ref('rooms/' + code + '/hostId').set(newHostId);
+          }
+        }
+      }
+    }
+  }
+
+  // ---- UI handlers ----
+
+  // show small host window with message
+  function showHostWindow(msg){
+    if(!OM.hostWindow || !OM.hostMessage) return;
+    OM.hostMessage.innerText = msg;
+    OM.hostWindow.style.display = 'block';
+  }
+
+  function hideHostWindow(){
+    if(!OM.hostWindow) return;
+    OM.hostWindow.style.display = 'none';
+  }
+
+  // CREATE HOST button
+  if(OM.createHostBtn){
+    OM.createHostBtn.addEventListener('click', async ()=>{
+      OM.createHostBtn.disabled = true;
+      showHostWindow('Створюємо хост...');
+      try{
+        const code = await createRoom();
+        if(!code) throw new Error('Не вдалося згенерувати код, спробуй ще раз');
+        showHostWindow('Створено хост!\nКод: ' + code);
+        // зберігаємо локально теперішній код кімнати
+        OM.currentRoomCode = code;
+        OM.currentPlayerSlot = 'player1';
+        // підписка на оновлення кімнати (наприклад, щоб бачити гравців)
+        db.ref('rooms/' + code).on('value', snap => {
+          const data = snap.val();
+          // можна показувати список гравців у віконці, не чіпаючи нічого іншого
+          if(data && data.players){
+            const names = Object.keys(data.players).map(k=>k + (data.players[k].id===OM.localPlayerId ? ' (ти)' : '')).join(', ');
+            showHostWindow('Створено хост!\nКод: ' + code + '\nГравці: ' + names);
+          }
+        });
+      }catch(err){
+        alert('Помилка: ' + (err.message || err));
+      } finally {
+        OM.createHostBtn.disabled = false;
+      }
+    });
+  }
+
+  // RANDOM JOIN button
+  if(OM.randomJoinBtn){
+    OM.randomJoinBtn.addEventListener('click', async ()=>{
+      OM.randomJoinBtn.disabled = true;
+      try{
+        const found = await findRandomRoom();
+        if(!found) { alert('Немає доступних ігор'); return; }
+        await joinRoomByCode(found);
+        OM.currentRoomCode = found;
+        alert('Підключено до кімнати: ' + found);
+        closeOnlineMenu();
+        // Далі можна підписатися на оновлення кімнати/гравців
+      }catch(err){
+        alert('Помилка: ' + (err.message || err));
+      } finally {
+        OM.randomJoinBtn.disabled = false;
+      }
+    });
+  }
+
+  // JOIN button (по коду)
+  if(OM.joinBtn && OM.hostCodeInput){
+    OM.joinBtn.addEventListener('click', async ()=>{
+      const code = String(OM.hostCodeInput.value || '').trim();
+      if(!code){ alert('Введіть код кімнати'); return; }
+      OM.joinBtn.disabled = true;
+      try{
+        await joinRoomByCode(code);
+        OM.currentRoomCode = code;
+        alert('Успішно підключено до кімнати: ' + code);
+        closeOnlineMenu();
+      }catch(err){
+        alert('Не вдалося підключитися: ' + (err.message || err));
+      } finally {
+        OM.joinBtn.disabled = false;
+      }
+    });
+  }
+
+  // При закритті вікна/оновленні — прибираємо гравця з кімнати
+  window.addEventListener('beforeunload', async ()=>{
+    try{
+      if(OM.currentRoomCode) await leaveRoom(OM.currentRoomCode);
+    }catch(e){}
+  });
+
+  // ---- ДОКЛАДНІШЕ: підписка на кімнату (опціонально) ----
+  // Тут не змінюємо логіку гри — це базова підписка, щоб ти міг
+  // вбудувати оновлення позицій інших гравців у свій update()
+  // Наприклад: db.ref('rooms/'+code+'/players').on('value', snap => { ... })
+
+  // Експорт OM в глобал для налагодження (не обов'язково)
+  window.__onlineModule = OM;
+
+})();
+</script>
+<!-- FIREBASE + ONLINE LOGIC END -->
+
 </body>
-</html>
+      </html>
